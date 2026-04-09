@@ -177,8 +177,8 @@ function Toggle({ label, active, onClick, activeColor }) {
 
 // ─── Main App ─────────────────────────────────────────────────────
 export default function App() {
-  // Model size (billions of parameters)
-  const [modelSize, setModelSize] = useState(7);
+  // Model size (billions of parameters, stored as log10)
+  const [modelSizeLog, setModelSizeLog] = useState(Math.log10(7));
   // Break cost at 7B reference size ($)
   const [b0log, setB0log] = useState(2); // 10^2 = $100 (Deep Ignorance at 7B)
   // Break cost scaling with model size
@@ -190,6 +190,9 @@ export default function App() {
   const [decel, setDecel] = useState(0.85);
   // Sweep distribution mode
   const [uniform, setUniform] = useState(false);
+
+  // Model size
+  const modelSize = Math.round(Math.pow(10, modelSizeLog));
 
   // Derived costs
   const B0_7B = Math.pow(10, b0log);
@@ -315,8 +318,11 @@ export default function App() {
         {/* Sliders */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px', marginBottom: 16 }}>
           <Slider label="N — model size (billions)" hint="Determines training cost C₀ and scales break cost B"
-            min={1} max={500} step={1} value={modelSize} onChange={setModelSize}
-            format={(v) => v + 'B'} />
+            min={0} max={4} step={0.01} value={modelSizeLog} onChange={setModelSizeLog}
+            format={(v) => {
+              const n = Math.round(Math.pow(10, v));
+              return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'T' : n + 'B';
+            }} />
           <Slider label="B₀ — break cost at 7B (full fine-tune)" hint="Deep Ignorance ≈ $100 | uses full FT (over-optimistic for safeguard value — LoRA is cheaper)"
             min={0} max={5} step={0.1} value={b0log} onChange={setB0log}
             format={(v) => fmt$(Math.pow(10, v))} />
