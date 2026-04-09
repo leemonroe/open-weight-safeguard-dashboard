@@ -73,26 +73,26 @@ export function getTimeSeries(C0, B0_scaled, rr, a1, decel, nPoints = 100) {
 
 // ─── Years bought ─────────────────────────────────────────────────
 // Without safeguards, capability is free (cost=$0, available at t=0).
-// years_bought = first time attacker can afford to break safeguards.
+// years_bought = total time (within 5yr horizon) where attacker
+// cannot afford to break or retrain. With r > 1, break cost can
+// rise over time as safeguard techniques improve, so protection
+// may start later and/or have gaps.
 
 export function yearsBought(C0, B0_scaled, rr, a1, decel, budget) {
   const N = 200;
+  let protectedSteps = 0;
 
-  // If break cost is already affordable at t=0, safeguards buy 0 time
-  const atkCost0 = Math.min(B0_scaled, C0);
-  if (atkCost0 <= budget) return 0;
-
-  for (let i = 1; i <= N; i++) {
+  for (let i = 0; i <= N; i++) {
     const t = (i * 5) / N;
     const Pt = cumulativeProgress(a1, decel, t);
     const cBreak = (B0_scaled * Math.pow(rr, t)) / Pt;
     const cTrain = C0 / Pt;
     const atkCost = Math.min(cBreak, cTrain);
 
-    if (atkCost <= budget) return t;
+    if (atkCost > budget) protectedSteps++;
   }
 
-  return 5; // capped at horizon
+  return (protectedSteps / (N + 1)) * 5;
 }
 
 // ─── Beta distribution utilities ──────────────────────────────────
@@ -146,7 +146,8 @@ export function runSweep(budget, modes, N, exponentialScaling, nSamples = 3000, 
       : sampleBeta(shapeParams[0], shapeParams[1], ...range);
 
   const C0 = trainingCost(N);
-  const counts = [0, 0, 0, 0, 0];
+  // Histogram buckets: [0-1yr, 1-2yr, 2-3yr, 3-4yr, 4-5yr, 5yr]
+  const buckets = [0, 0, 0, 0, 0, 0];
 
   for (let i = 0; i < nSamples; i++) {
     const sB0 = Math.pow(10, sample(pB0, PARAM_RANGES.b0log));
@@ -156,12 +157,11 @@ export function runSweep(budget, modes, N, exponentialScaling, nSamples = 3000, 
     const sAd = sample(pAd, PARAM_RANGES.decel);
 
     const yb = yearsBought(C0, sB, sRR, sA1, sAd, budget);
-    for (let y = 0; y < 5; y++) {
-      if (yb >= y + 1) counts[y]++;
-    }
+    const bucket = Math.min(Math.floor(yb), 5);
+    buckets[bucket]++;
   }
 
-  return counts.map((c) => Math.round((c / nSamples) * 100));
+  return buckets.map((c) => Math.round((c / nSamples) * 100));
 }
 
 // ─── Distribution chart data ──────────────────────────────────────

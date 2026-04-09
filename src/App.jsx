@@ -130,7 +130,7 @@ function DistChart({ label, mode, lo, hi, labelFn, uniform }) {
 // ─── Sweep bar chart ──────────────────────────────────────────────
 function SweepChart({ data: sweepData, title }) {
   const data = {
-    labels: ['≥1', '≥2', '≥3', '≥4', '≥5'],
+    labels: ['0–1', '1–2', '2–3', '3–4', '4–5', '5'],
     datasets: [{ data: sweepData, backgroundColor: C.green, borderRadius: 3 }],
   };
 
@@ -434,10 +434,10 @@ export default function App() {
           </div>
 
           <div style={{ fontSize: 13, fontWeight: 500, color: C.text, marginBottom: 4 }}>
-            % of worlds where safeguards buy ≥ N years
+            Distribution of years bought across sampled worlds
           </div>
           <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 16 }}>
-            2000 samples from distributions above. Fixed budget per panel.
+            2000 samples from distributions above. Fixed budget per panel. Bimodal = safeguards either irrelevant (0yr) or hold until retraining becomes affordable.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             {BUDGETS.map((b, i) => (
