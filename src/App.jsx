@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -12,6 +12,8 @@ import {
 } from 'chart.js';
 import { Line, Bar } from 'react-chartjs-2';
 import {
+  trainingCost,
+  breakCostAtSize,
   getTimeSeries,
   yearsBought,
   runSweep,
@@ -51,7 +53,7 @@ const BUDGETS = [
 const B_COLORS = [C.gray, C.amber, C.blue, C.red];
 
 // ─── Slider component ─────────────────────────────────────────────
-function Slider({ id, label, hint, min, max, step, value, onChange, format }) {
+function Slider({ label, hint, min, max, step, value, onChange, format }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
@@ -152,37 +154,65 @@ function SweepChart({ data: sweepData, title }) {
   );
 }
 
+// ─── Toggle button ────────────────────────────────────────────────
+function Toggle({ label, active, onClick, activeColor }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: active ? (activeColor || C.green) : C.surfaceAlt,
+        color: active ? '#000' : C.textMuted,
+        border: `1px solid ${active ? 'transparent' : C.border}`,
+        borderRadius: 4,
+        padding: '4px 12px',
+        fontSize: 12,
+        fontWeight: 500,
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────
 export default function App() {
-  const [c0log, setC0log] = useState(6.3);
-  const [f0log, setF0log] = useState(-0.7);
-  const [r0log, setR0log] = useState(0.3);
+  // Model size (billions of parameters)
+  const [modelSize, setModelSize] = useState(7);
+  // Break cost at 7B reference size ($)
+  const [b0log, setB0log] = useState(2); // 10^2 = $100 (Deep Ignorance at 7B)
+  // Break cost scaling with model size
+  const [expScaling, setExpScaling] = useState(false);
+  // Safeguard improvement rate
   const [rrate, setRrate] = useState(1.0);
+  // Algorithmic progress
   const [a1, setA1] = useState(3.0);
   const [decel, setDecel] = useState(0.85);
+  // Sweep distribution mode
   const [uniform, setUniform] = useState(false);
 
-  const C0 = Math.pow(10, c0log);
-  const F0 = Math.pow(10, f0log);
-  const R0 = Math.pow(10, r0log);
+  // Derived costs
+  const B0_7B = Math.pow(10, b0log);
+  const B0_scaled = breakCostAtSize(B0_7B, modelSize, expScaling);
+  const C0 = trainingCost(modelSize);
 
   // Main time series
   const series = useMemo(
-    () => getTimeSeries(C0, F0, R0, rrate, a1, decel),
-    [C0, F0, R0, rrate, a1, decel]
+    () => getTimeSeries(C0, B0_scaled, rrate, a1, decel),
+    [C0, B0_scaled, rrate, a1, decel]
   );
 
   // Years bought per actor
   const yb = useMemo(
-    () => BUDGETS.map((b) => yearsBought(C0, F0, R0, rrate, a1, decel, b.value)),
-    [C0, F0, R0, rrate, a1, decel]
+    () => BUDGETS.map((b) => yearsBought(C0, B0_scaled, rrate, a1, decel, b.value)),
+    [C0, B0_scaled, rrate, a1, decel]
   );
 
-  // Sweeps (memoized)
-  const modes = useMemo(() => ({ c0log, f0log, r0log, rr: rrate, a1, decel }), [c0log, f0log, r0log, rrate, a1, decel]);
+  // Sweeps
+  const modes = useMemo(() => ({ b0log, rr: rrate, a1, decel }), [b0log, rrate, a1, decel]);
   const sweeps = useMemo(
-    () => BUDGETS.map((b) => runSweep(b.value, modes, 2000, uniform)),
-    [modes, uniform]
+    () => BUDGETS.map((b) => runSweep(b.value, modes, modelSize, expScaling, 2000, uniform)),
+    [modes, modelSize, expScaling, uniform]
   );
 
   // Chart data
@@ -190,9 +220,8 @@ export default function App() {
   const mainChartData = {
     labels,
     datasets: [
-      { data: series.breakCost, borderColor: C.red, borderWidth: 2, pointRadius: 0, tension: 0.3, label: 'Break SG' },
-      { data: series.trainCost, borderColor: C.blue, borderWidth: 2, pointRadius: 0, tension: 0.3, label: 'Retrain' },
-      { data: series.naiveCost, borderColor: C.gray, borderWidth: 1.5, pointRadius: 0, tension: 0.3, borderDash: [3, 3], label: 'Naive FT' },
+      { data: series.breakCost, borderColor: C.red, borderWidth: 2, pointRadius: 0, tension: 0.3, label: 'Break safeguard' },
+      { data: series.trainCost, borderColor: C.blue, borderWidth: 2, pointRadius: 0, tension: 0.3, label: 'Retrain from scratch' },
       { data: series.attackerCost, borderColor: C.green, borderWidth: 2.5, pointRadius: 0, tension: 0.3, label: 'Attacker pays' },
       ...BUDGETS.map((b, i) => ({
         data: series.ts.map(() => b.value),
@@ -215,12 +244,12 @@ export default function App() {
       x: { title: { display: true, text: 'Years', color: C.textMuted }, grid: { color: C.gridLine },
         ticks: { color: C.textMuted, maxTicksLimit: 10 } },
       y: {
-        type: 'logarithmic', min: 1, max: 1e9,
+        type: 'logarithmic', min: 1, max: 1e10,
         title: { display: true, text: 'Cost ($)', color: C.textMuted },
         grid: { color: C.gridLine },
         ticks: {
           color: C.textMuted,
-          callback: (v) => ([1, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9].includes(v) ? fmt$(v) : ''),
+          callback: (v) => ([1, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10].includes(v) ? fmt$(v) : ''),
         },
       },
     },
@@ -240,8 +269,9 @@ export default function App() {
           Safeguard value model
         </h1>
         <p style={{ fontSize: 13, color: C.textMuted, marginBottom: 32, maxWidth: 640 }}>
-          When do AI model safeguards buy meaningful time against adversaries?
-          An interactive exploration of tamper resistance, algorithmic progress, and attacker budgets.
+          How long do open-weight model safeguards delay adversaries?
+          Without safeguards, dangerous capability is freely available. Safeguards
+          buy time = how long until an attacker can afford to break them.
         </p>
 
         {/* Equations */}
@@ -253,39 +283,56 @@ export default function App() {
           <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8, fontFamily: "'IBM Plex Sans', sans-serif" }}>
             Model equations
           </div>
-          <div>P(t) = <span style={{ color: C.textMuted }}>cumulative progress</span> = ∏ A₁ × decel<sup>y</sup> for y=0..t</div>
-          <div>R(t) = R₀ × r<sup>t</sup> <span style={{ color: C.textMuted }}> tamper resistance</span></div>
-          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 6, marginTop: 6 }}>
-            cost_retrain(t) = C₀ / P(t)
+          <div>C₀(N) = 800K × (N/7)² <span style={{ color: C.textMuted }}> training cost at N billion params</span></div>
+          <div>
+            B(N) = B₀ × (N/7){' '}
+            <span style={{ color: C.textMuted }}>
+              [linear] {expScaling ? '' : '← active'}
+            </span>
           </div>
-          <div>cost_break(t) = F₀ × R(t) / P(t)</div>
-          <div>cost_naive(t) = F₀ / P(t)</div>
+          <div>
+            {'     '}= B₀ × e<sup>(N−7)/7</sup>{' '}
+            <span style={{ color: C.textMuted }}>
+              [exponential] {expScaling ? '← active' : ''}
+            </span>
+          </div>
+          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 6, marginTop: 6 }}>
+            P(t) = <span style={{ color: C.textMuted }}>cumulative progress</span> = ∏ A₁ × decel<sup>y</sup> for y=0..t
+          </div>
+          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 6, marginTop: 6 }}>
+            cost_retrain(t) = C₀(N) / P(t)
+          </div>
+          <div>cost_break(t) = B(N) × r<sup>t</sup> / P(t)</div>
           <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 6, marginTop: 6 }}>
             attacker_cost(t) = min( cost_break, cost_retrain )
           </div>
           <div style={{ color: C.green }}>
-            years_bought = t<sub>with_SG</sub> − t<sub>without_SG</sub>
+            years_bought = first t where attacker_cost(t) ≤ budget
           </div>
-          <div style={{ color: C.textDim }}>where t<sub>x</sub> = first time cost ≤ budget</div>
+          <div style={{ color: C.textDim }}>without safeguards, capability is free (cost = $0)</div>
         </div>
 
-        {/* Sliders — 2 columns */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px', marginBottom: 24 }}>
-          <Slider label="C₀ — train from scratch cost" hint="7B ~ $2M | 70B ~ $20M | frontier ~ $200M"
-            min={5} max={8.5} step={0.1} value={c0log} onChange={setC0log}
+        {/* Sliders */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px', marginBottom: 16 }}>
+          <Slider label="N — model size (billions)" hint="Determines training cost C₀ and scales break cost B"
+            min={1} max={500} step={1} value={modelSize} onChange={setModelSize}
+            format={(v) => v + 'B'} />
+          <Slider label="B₀ — break cost at 7B (full fine-tune)" hint="Deep Ignorance ≈ $100 | uses full FT (over-optimistic for safeguard value — LoRA is cheaper)"
+            min={0} max={5} step={0.1} value={b0log} onChange={setB0log}
             format={(v) => fmt$(Math.pow(10, v))} />
-          <Slider label="F₀ — naive fine-tune cost" hint="Undo RLHF on 7B ~ $0.20 | 70B ~ $5 | frontier ~ $50"
-            min={-1} max={4} step={0.1} value={f0log} onChange={setF0log}
-            format={(v) => fmt$(Math.pow(10, v))} />
-          <Slider label="R₀ — current tamper resistance" hint="RLHF: 1–3× | RMU: 10–50× | Deep Ignorance: 200–1000×"
-            min={0} max={4} step={0.01} value={r0log} onChange={setR0log}
-            format={(v) => {
-              const r = Math.pow(10, v);
-              return r >= 100 ? Math.round(r).toLocaleString() + '×' : r.toFixed(1) + '×';
-            }} />
-          <Slider label="r — annual TR improvement" hint="1.0 = no improvement | 2.0 = doubles/yr"
+          <Slider label="r — annual safeguard improvement" hint="1.0 = no improvement | 2.0 = techniques double break cost/yr"
             min={1} max={5} step={0.1} value={rrate} onChange={setRrate}
             format={(v) => v.toFixed(1) + '×/yr'} />
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 13, color: C.text, marginBottom: 6 }}>Break cost scaling with model size</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Toggle label="Linear: B₀×(N/7)" active={!expScaling} onClick={() => setExpScaling(false)} />
+              <Toggle label="Exponential: B₀×e^((N−7)/7)" active={expScaling} onClick={() => setExpScaling(true)} activeColor={C.amber} />
+            </div>
+            <div style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>
+              Does tamper resistance scale linearly or exponentially with model size? Unknown.
+            </div>
+          </div>
           <Slider label="A₁ — progress Y1 multiplier" hint="Epoch AI central: ~2.5–3×/yr (algo + hardware)"
             min={1.5} max={5} step={0.1} value={a1} onChange={setA1}
             format={(v) => v.toFixed(1) + '×'} />
@@ -300,24 +347,24 @@ export default function App() {
           border: `1px solid ${C.border}`, fontSize: 13,
         }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 24px', color: C.textMuted }}>
-            <span>Break SG now: <b style={{ color: C.text }}>{fmt$(F0 * R0)}</b></span>
-            <span>Naive FT now: <b style={{ color: C.text }}>{fmt$(F0)}</b></span>
-            <span>Retrain now: <b style={{ color: C.text }}>{fmt$(C0)}</b></span>
-            <span>Deep Ignorance (~500×): <b style={{ color: C.amber }}>{fmt$(F0 * 500)}</b></span>
-            <span>Ceiling R = C₀/F₀: <b style={{ color: C.text }}>{Math.round(C0 / F0).toLocaleString()}×</b></span>
+            <span>Model: <b style={{ color: C.text }}>{modelSize}B</b></span>
+            <span>Break cost now: <b style={{ color: C.red }}>{fmt$(B0_scaled)}</b></span>
+            <span>Retrain cost: <b style={{ color: C.blue }}>{fmt$(C0)}</b></span>
+            <span>B₀ at 7B: <b style={{ color: C.text }}>{fmt$(B0_7B)}</b></span>
+            <span>Scaling: <b style={{ color: C.text }}>{expScaling ? 'exponential' : 'linear'}</b></span>
+            {B0_scaled >= C0 && <span style={{ color: C.green }}>Break ≥ retrain (safeguard is ceiling-bound)</span>}
           </div>
         </div>
 
         {/* Main chart */}
         <div style={{ marginBottom: 8 }}>
-          <h2 style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>Cost curves (absolute $)</h2>
+          <h2 style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>Cost curves (absolute $) — {modelSize}B model</h2>
           <div style={{ height: 360 }}>
             <Line data={mainChartData} options={mainChartOpts} />
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginTop: 8, fontSize: 12, color: C.textMuted }}>
-            <span>● <span style={{ color: C.red }}>Break SG</span>: F₀×R(t)/P(t)</span>
-            <span>● <span style={{ color: C.blue }}>Retrain</span>: C₀/P(t)</span>
-            <span style={{ color: C.gray }}>┄ Naive FT: F₀/P(t)</span>
+            <span>● <span style={{ color: C.red }}>Break safeguard</span>: B(N)×r<sup>t</sup>/P(t)</span>
+            <span>● <span style={{ color: C.blue }}>Retrain from scratch</span>: C₀(N)/P(t)</span>
             <span>● <span style={{ color: C.green }}>Attacker pays</span>: min(red, blue)</span>
             <span style={{ color: C.textDim }}>┄ Budget lines ($10K / $100K / $1M / $1B)</span>
           </div>
@@ -327,7 +374,8 @@ export default function App() {
         <div style={{ marginTop: 32, marginBottom: 32 }}>
           <h2 style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Years bought by safeguards</h2>
           <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 12 }}>
-            Delay vs. world with no safeguards (attacker pays F₀/P(t))
+            Without safeguards, capability is freely available (0 delay).
+            Safeguards buy time until attacker can afford to break them.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
             {BUDGETS.map((b, i) => (
@@ -336,7 +384,9 @@ export default function App() {
                 label={b.label}
                 value={yb[i] < 0.05 ? '0 yr' : yb[i].toFixed(1) + ' yr'}
                 color={ybColor(yb[i])}
-                detail={F0 <= b.value ? `naive FT ${fmt$(F0)} < budget` : "can't afford naive FT"}
+                detail={B0_scaled <= b.value
+                  ? `break ${fmt$(B0_scaled)} ≤ budget`
+                  : `break ${fmt$(B0_scaled)} > budget`}
               />
             ))}
           </div>
@@ -366,18 +416,15 @@ export default function App() {
             {uniform
               ? 'Uniform sampling across entire range. Slider position ignored.'
               : 'Beta-shaped priors centered on slider values. Spread covers plausible range.'}
+            {' '}Model size ({modelSize}B) and scaling mode ({expScaling ? 'exp' : 'linear'}) are fixed.
           </p>
 
           <div style={{ marginBottom: 24 }}>
             <div style={{ fontSize: 13, fontWeight: 500, color: C.text, marginBottom: 8 }}>Sampling distributions</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
-              <DistChart label="C₀ (train cost)" mode={c0log} lo={PARAM_RANGES.c0log[0]} hi={PARAM_RANGES.c0log[1]}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+              <DistChart label="B₀ at 7B (break cost)" mode={b0log} lo={PARAM_RANGES.b0log[0]} hi={PARAM_RANGES.b0log[1]}
                 labelFn={(v) => fmt$(Math.pow(10, v))} uniform={uniform} />
-              <DistChart label="F₀ (fine-tune cost)" mode={f0log} lo={PARAM_RANGES.f0log[0]} hi={PARAM_RANGES.f0log[1]}
-                labelFn={(v) => fmt$(Math.pow(10, v))} uniform={uniform} />
-              <DistChart label="R₀ (tamper resistance)" mode={r0log} lo={PARAM_RANGES.r0log[0]} hi={PARAM_RANGES.r0log[1]}
-                labelFn={(v) => Math.round(Math.pow(10, v)) + '×'} uniform={uniform} />
-              <DistChart label="r (TR improvement)" mode={rrate} lo={PARAM_RANGES.rr[0]} hi={PARAM_RANGES.rr[1]}
+              <DistChart label="r (safeguard improvement)" mode={rrate} lo={PARAM_RANGES.rr[0]} hi={PARAM_RANGES.rr[1]}
                 labelFn={(v) => v.toFixed(1) + '×'} uniform={uniform} />
               <DistChart label="A₁ (progress Y1)" mode={a1} lo={PARAM_RANGES.a1[0]} hi={PARAM_RANGES.a1[1]}
                 labelFn={(v) => v.toFixed(1) + '×'} uniform={uniform} />
@@ -401,8 +448,9 @@ export default function App() {
 
         {/* Footer */}
         <div style={{ marginTop: 48, paddingTop: 16, borderTop: `1px solid ${C.border}`, fontSize: 11, color: C.textDim }}>
-          Safeguard Value Model v0.6 — Dollar-calibrated, beta-distributed parameter sweeps.
-          Based on Deep Ignorance (O'Brien et al. 2025), Epoch AI algorithmic progress estimates.
+          Safeguard Value Model v1.0 — Absolute cost framing, model-size dependent.
+          Deep Ignorance break cost calibrated from O'Brien et al. 2025. Progress estimates from Epoch AI.
+          Break costs assume full fine-tuning (over-optimistic for safeguard value).
         </div>
       </div>
     </div>
